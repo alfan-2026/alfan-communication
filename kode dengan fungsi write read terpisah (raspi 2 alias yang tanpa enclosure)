@@ -1,0 +1,71 @@
+#!/usr/bin/python3.10
+import socket
+import time
+
+# Konfigurasi
+RASPI1_IP = "192.168.4.1"  # IP Raspi 1
+READ_PORT  = 5000         # Port yang dipakai Raspi 2 untuk menerima data dari Raspi 1
+WRITE_PORT = 5001         # Port yang dipakai Raspi 2 untuk mengirim data ke Raspi 1
+
+# File log state (dideklarasikan dari awal)
+STATE_RASPI2_FILE = "/home/pi/communication/state_raspi2.txt"  # Log state Raspi 2 (sumber data untuk write)
+STATE_RASPI1_FILE = "/home/pi/communication/state_raspi1.txt"  # Log state Raspi 1 (hasil dari read)
+
+def read_data_from_raspi1():
+    """
+    Menghubungkan ke Raspi 1 dan membaca data integer yang dikirim,
+    kemudian menulis ulang (flush and write) ke file STATE_RASPI1_FILE.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((RASPI1_IP, WRITE_PORT))
+            data = s.recv(1024).decode().strip()
+            int_data = int(data)
+            with open(STATE_RASPI1_FILE, "w") as f:
+                f.write(str(int_data))
+            print("Raspi 2: Terbaca integer", int_data, "dari Raspi 1; file log state Raspi 1 diupdate.")
+            return int_data
+    except Exception as e:
+        print("Raspi 2: Error membaca data dari Raspi 1:", e)
+        return None
+
+def write_data_to_raspi1():
+    """
+    Membaca data integer dari file STATE_RASPI2_FILE,
+    kemudian mengirimkannya ke Raspi 1.
+    """
+    try:
+        with open(STATE_RASPI2_FILE, "r") as f:
+            data = f.read().strip()
+            int_data = int(data)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((RASPI1_IP, READ_PORT))
+            s.sendall(str(int_data).encode())
+        print("Raspi 2: Mengirim integer", int_data, "ke Raspi 1.")
+        return True
+    except Exception as e:
+        print("Raspi 2: Error menulis data ke Raspi 1:", e)
+        return False
+
+def check_wifi_raspi1(timeout=3):
+    """
+    Memeriksa apakah Raspi 1 terdeteksi (berhasil connect) dengan mencoba
+    membuka koneksi ke Raspi 1 pada port WRITE_PORT.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((RASPI1_IP, WRITE_PORT))
+        print("Raspi 2: Raspi 1 terdeteksi (wifi connect OK).")
+        return True
+    except Exception:
+        print("Raspi 2: Raspi 1 tidak terdeteksi (wifi connect gagal).")
+        return False
+
+# Contoh penggunaan fungsi-fungsi di atas
+if __name__ == "__main__":
+    if check_wifi_raspi1():
+        read_data_from_raspi1()
+        write_data_to_raspi1()
+    else:
+        print("Raspi 2: Tidak dapat terhubung ke Raspi 1, cek koneksi Wi-Fi.")
