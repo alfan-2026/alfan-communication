@@ -1,0 +1,80 @@
+#!/usr/bin/python3.10
+import socket
+import time
+import threading
+from queue import Queue
+
+# Konfigurasi Raspi 2
+SEND_PORT = 5001      # Mengirim ke Raspi 1
+RECEIVE_PORT = 5000   # Menerima dari Raspi 1
+TARGET_IP = "192.168.4.1"
+
+recv_queue = Queue()
+
+def receiver_thread():
+    """Thread untuk menerima pesan secara terus-menerus."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind(("0.0.0.0", RECEIVE_PORT))
+        server_sock.listen(5)
+        while True:
+            try:
+                conn, addr = server_sock.accept()
+                with conn:
+                    data = conn.recv(1024)
+                    if data:
+                        msg = data.decode().strip()
+                        print(f"[Raspi 2 Receiver] Diterima: {msg}")
+                        recv_queue.put(msg)
+            except Exception:
+                continue
+
+def send_message(message, target_ip, port):
+    """Mengirim pesan ke target; kembalikan True jika sukses."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((target_ip, port))
+            s.sendall(message.encode())
+            print(f"Raspi 2 terkirim: {message}")
+            return True
+    except Exception:
+        return False
+
+if __name__ == "__main__":
+    threading.Thread(target=receiver_thread, daemon=True).start()
+    
+    state = 1  # Mulai dari State 1
+    while True:
+        if state == 1:
+            # --- State 1: Raspi 2 menunggu "Data dari Raspi 1" lalu mengirim ACK ---
+            data_received = False
+            while not data_received:
+                while not recv_queue.empty():
+                    msg = recv_queue.get()
+                    if msg == "Data dari Raspi 1":
+                        print("Raspi 2: Data dari Raspi 1 diterima, mengirim ACK.")
+                        data_received = True
+                    else:
+                        print(f"Raspi 2: Pesan tidak terduga: {msg}")
+                if not data_received:
+                    print("Raspi 2: Menunggu Data dari Raspi 1...")
+                    time.sleep(0.5)
+            send_message("ACK dari Raspi 2", TARGET_IP, SEND_PORT)
+            time.sleep(1)  # Delay 1 detik agar Raspi 1 sempat berpindah state
+            state = 2
+
+        elif state == 2:
+            # --- State 2: Raspi 2 mengirim "Data dari Raspi 2" hingga menerima "ACK dari Raspi 1" ---
+            ack_received = False
+            while not ack_received:
+                send_message("Data dari Raspi 2", TARGET_IP, SEND_PORT)
+                time.sleep(0.5)
+                while not recv_queue.empty():
+                    msg = recv_queue.get()
+                    if msg == "ACK dari Raspi 1":
+                        print("Raspi 2: ACK dari Raspi 1 diterima, pindah ke State 1.")
+                        ack_received = True
+                    else:
+                        print(f"Raspi 2: Pesan tidak terduga: {msg}")
+            time.sleep(0.01)
+            state = 1
