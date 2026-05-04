@@ -1,0 +1,159 @@
+import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import Int32
+from std_srvs.srv import Trigger
+
+# Import GPIO library for Raspberry Pi
+# from gpiozero import Button
+# Import Bleak for Bluetooth communication
+from bleak import BleakClient # Mengimpor library untuk komunikasi Bluetooth Low Energy (BLE)
+import asyncio # Mengimpor library untuk menangani operasi asynchronous
+import threading  # Untuk menjalankan BLE monitor di thread terpisah
+
+import time
+
+
+# UUID untuk BLE service dan karakteristik yang akan diakses
+SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"  # UUID untuk layanan BLE ESP32
+CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"  # UUID untuk karakteristik BLE (tempat membaca data)
+
+# Alamat MAC ESP32
+ESP32_ADDRESS = "C0:4E:30:0A:AF:0D"  # Alamat MAC perangkat ESP32 (ganti dengan alamat perangkat Anda)
+
+THIS_ROBOT_NAME = "JUNA"
+OTHER_ROBOT_NAME = "CHACA"
+
+
+class CommunicationManager(Node):
+
+    def __init__(self):
+        super().__init__(f'{THIS_ROBOT_NAME}_communication_manager_py')
+
+        self.current_gerak_tari_index = 0
+        self.music_state = 1
+        self.panic_state = 0    # nanti kalo udah ada button diganti 0
+        # GPIO setup (panic button on GPIO17, adjust as needed)
+        # self.panic_button = Button(17)  # GPIO17, BCM numbering
+
+        # Subscriber untuk data indeks gerak tari
+        # yang dikirim dari internal robot A
+        # hanya untuk diakses oleh robot A sendiri
+        self.subs_internal_idx = self.create_subscription(
+            Int32,
+            f'{THIS_ROBOT_NAME}/internal/current_index',
+            self.internal_index_callback,
+            10
+        )
+        self.subs_internal_idx
+
+        # Service untuk meng-handle request dari robot B
+        # yang meminta data indeks gerak tari
+        self.serv_get_index = self.create_service(
+            Trigger,
+            f'{THIS_ROBOT_NAME}/get_current_index',
+            self.get_current_index_callback
+        )
+
+        self.serv_is_panic = self.create_service(
+            Trigger,
+            f'{THIS_ROBOT_NAME}/get_panic_state',
+            self.get_panic_state_callback
+        )
+
+        self.serv_music_state = self.create_service(
+            Trigger,
+            f'{THIS_ROBOT_NAME}/get_music_state',
+            self.get_music_state_callback
+        )
+
+        self.serv_shutdown = self.create_service(
+            Trigger,
+            f'{THIS_ROBOT_NAME}/request_shutdown',
+            self.shutdown_callback
+        )
+
+        t = threading.Thread(target=lambda: asyncio.run(self.ble_monitor()), daemon=True)
+        t.start()
+        self.get_logger().info("Communication Manager Robot A Initialized")
+
+    def internal_index_callback(self, msg):
+        self.current_gerak_tari_index = msg.data
+        self.get_logger().info(f"Internal gerak tari index: {self.current_gerak_tari_index}")
+        
+    def get_current_index_callback(self, request, response):
+        # self.get_logger().info("Request received from other robot")
+        response.success = True
+        response.message = str(self.current_gerak_tari_index)
+        return response
+    
+    def get_panic_state_callback(self, request, response):
+        # self.panic_state = self.panic_button.is_pressed
+        # self.get_logger().info("Panic button pressed: " + str(self.panic_state))
+        response.success = True
+        response.message = str(self.panic_state)
+        return response
+    
+    async def ble_monitor(self):
+        while rclpy.ok():
+            self.get_logger().info("Trying to connect to ESP32 BLE...")
+            client = BleakClient(ESP32_ADDRESS, timeout=10.0)
+            try:
+                await client.connect()
+                self.get_logger().info("Connected to ESP32!")
+                while client.is_connected:
+                    try:
+                        data = await client.read_gatt_char(CHARACTERISTIC_UUID)
+                        v = int.from_bytes(data, byteorder="little")
+                        if self.music_state != v:
+                            self.music_state = v  # Simpan nilai asli dari ESP32
+                            self.get_logger().info(f"BLE read → {self.music_state}")
+                    except Exception as e:
+                        self.get_logger().warn(f"Read error: {e}")
+                        break
+                    await asyncio.sleep(1.0)
+            except Exception as e:
+                self.get_logger().error(f"Connect failed: {e}")
+            finally:
+                if client.is_connected:
+                    await client.disconnect()
+                self.get_logger().info("Disconnected, retry in 2s…")
+                await asyncio.sleep(2.0)
+
+
+    def get_music_state_callback(self, request, response):
+        value = self.music_state  # Use the cached value from the BLE monitor
+        if value >= 0:
+            response.success = True
+            response.message = str(value)
+        else:
+            response.success = False
+            response.message = "Failed to read music state"
+        return response
+    
+    def shutdown_callback(self, request, response):
+        self.get_logger().info("Shutdown request received. Shutting down...")
+    
+        response.success = True
+        response.message = "Shutting down communication_manager_robot_A"
+
+        # Schedule shutdown after sending response
+        def shutdown():
+            self.destroy_node()
+            rclpy.shutdown()
+            exit(0)
+
+        self.get_logger().info("Shutting down node...")
+        self.executor.create_task(shutdown)  # Ensure it runs asynchronously
+        return response
+
+def main(args=None):
+    rclpy.init(args=args)
+    communication_manager = CommunicationManager()
+    rclpy.spin(communication_manager)
+    
+    # communication_manager.destroy_node()
+    # rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
