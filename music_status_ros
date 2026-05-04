@@ -1,0 +1,75 @@
+import asyncio
+import threading
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Int32  # Ubah dari Bool ke Int32
+from bleak import BleakClient
+
+# UUID untuk BLE service dan karakteristik yang akan diakses
+SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+# Alamat MAC ESP32
+ESP32_ADDRESS = "C0:4E:30:0A:AF:0D"
+
+
+class MusicStatusPublisher(Node):
+    def __init__(self):
+        super().__init__('music_status_publisher')
+        self.pub = self.create_publisher(Int32, 'music_status', 10)  # Ubah Bool ke Int32
+        self.value = 0  # Simpan sebagai integer, bukan boolean
+
+        # self.create_timer(1.0, self.publish_status)
+
+        t = threading.Thread(target=lambda: asyncio.run(self.ble_monitor()), daemon=True)
+        t.start()
+
+    async def ble_monitor(self):
+        while rclpy.ok():
+            self.get_logger().info("Trying to connect to ESP32 BLE...")
+            client = BleakClient(ESP32_ADDRESS, timeout=10.0)
+            try:
+                await client.connect()
+                self.get_logger().info("Connected to ESP32!")
+                while client.is_connected:
+                    try:
+                        data = await client.read_gatt_char(CHARACTERISTIC_UUID)
+                        v = int.from_bytes(data, byteorder="little")
+                        if self.value != v:
+                            self.value = v  # Simpan nilai asli dari ESP32
+                            self.publish_status()  # Hanya publish jika ada perubahan
+                        self.get_logger().debug(f"BLE read → {self.value}")
+                    except Exception as e:
+                        self.get_logger().warn(f"Read error: {e}")
+                        break
+                    await asyncio.sleep(1.0)
+            except Exception as e:
+                self.get_logger().error(f"Connect failed: {e}")
+            finally:
+                if client.is_connected:
+                    await client.disconnect()
+                self.get_logger().info("Disconnected, retry in 2s…")
+                await asyncio.sleep(2.0)
+
+    def publish_status(self):
+        msg = Int32()
+        msg.data = self.value
+        self.pub.publish(msg)
+        self.get_logger().info(f"Published music_status={msg.data}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = MusicStatusPublisher()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
