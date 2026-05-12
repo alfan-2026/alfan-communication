@@ -1,0 +1,52 @@
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+#define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
+#define CHARACTERISTIC_UUID "abcdef01-1234-1234-1234-123456789abc"
+
+BLECharacteristic* pCharacteristic = nullptr;
+bool deviceConnected = false;
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) { deviceConnected = true; };
+    void onDisconnect(BLEServer* pServer) { 
+        deviceConnected = false;
+        BLEDevice::startAdvertising(); 
+    }
+};
+
+void setup() {
+  Serial.begin(115200);
+  BLEDevice::init("ESP32-Sender"); 
+  BLEServer *pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+                      CHARACTERISTIC_UUID,
+                      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+                    );
+  pCharacteristic->addDescriptor(new BLE2902());
+  pService->start();
+
+  BLEDevice::startAdvertising();
+  Serial.println("ESP32 Siap!");
+}
+
+void loop() {
+  // MEMBACA DARI POWERSHELL
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    // MENERUSKAN KE RASPI VIA BLE
+    if (deviceConnected) {
+      pCharacteristic->setValue(cmd.c_str());
+      pCharacteristic->notify();
+      Serial.println("Data diteruskan ke Raspi: " + cmd);
+    }
+  }
+  delay(10);
+}
